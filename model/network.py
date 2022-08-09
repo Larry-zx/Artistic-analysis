@@ -37,11 +37,10 @@ class FeatureExtraction(nn.Module):
 
 
 class FC(BaseNetwork):  # 443
-    def __init__(self, model_type , output_dim):
+    def __init__(self, output_dim, in_dim=0 ,  model_type='resnet18'):
         super(FC, self).__init__()
         num1 = 0
         num2 = 0
-        input_dim = 0
         if model_type == 'resnet50':  # 2048
             input_dim = 2048
             num1 = 2 * input_dim + 1
@@ -62,6 +61,10 @@ class FC(BaseNetwork):  # 443
             input_dim = 1024 * 7 * 7
             num1 = 1024
             num2 = 2 * output_dim + 1
+        elif model_type == 'odg':
+            input_dim = in_dim
+            num1 = 2*input_dim+1
+            num2 = 2*output_dim+1
 
         self.fc = nn.Sequential(
             nn.Linear(input_dim, num1),
