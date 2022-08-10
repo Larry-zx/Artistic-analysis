@@ -1,6 +1,6 @@
 import torch.nn as nn
 from torchvision import models
-from model.base_network import BaseNetwork
+from ArtDataset_classifer.model.base_network import BaseNetwork
 
 
 # CNN模块提取特征
