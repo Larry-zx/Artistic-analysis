@@ -220,6 +220,7 @@ class detectionGCNv1(BaseNetwork):
         else:
             output = out
         # 输出 torch.Size([20, 2]) [B,2]
+        print(output.shape)
         pre_artist = self.artist_head(output)
         pre_genre = self.genre_head(output)
         pre_style = self.style_head(output)
