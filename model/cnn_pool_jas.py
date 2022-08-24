@@ -1,3 +1,4 @@
+# 为jas数据集的cnn_pool
 import torch
 import torch.nn as nn
 from torch.nn import init
@@ -197,7 +198,7 @@ class SoftPoolingGcnEncoder(GcnEncoderGraph):
     def __init__(self, class_num, max_num_nodes=cfg.k_node, input_dim=512, hidden_dim=648, embedding_dim=512,
                  num_layers=3,
                  assign_hidden_dim=648, assign_ratio=0.5, assign_num_layers=-1, num_pooling=2,
-                 pred_hidden_dims=[256], concat=True, bn=True, dropout=0.0, linkpred=True,
+                 pred_hidden_dims=[128], concat=True, bn=True, dropout=0.0, linkpred=True,
                  assign_input_dim=-1, args=None):
         '''
         Args:
@@ -256,8 +257,16 @@ class SoftPoolingGcnEncoder(GcnEncoderGraph):
             self.assign_conv_last_modules.append(assign_conv_last)
             self.assign_pred_modules.append(assign_pred)
 
-        self.head = self.build_pred_layers(self.pred_input_dim, pred_hidden_dims,
-                                           class_num, num_aggs=self.num_aggs)
+        self.quality_head = self.build_pred_layers(self.pred_input_dim, pred_hidden_dims,
+                                                   1, num_aggs=self.num_aggs)
+        self.beauty_head = self.build_pred_layers(self.pred_input_dim, pred_hidden_dims,
+                                                  1, num_aggs=self.num_aggs)
+        self.color_head = self.build_pred_layers(self.pred_input_dim, pred_hidden_dims,
+                                                 1, num_aggs=self.num_aggs)
+        self.composition_head = self.build_pred_layers(self.pred_input_dim, pred_hidden_dims,
+                                                       1, num_aggs=self.num_aggs)
+        self.content_head = self.build_pred_layers(self.pred_input_dim, pred_hidden_dims,
+                                                   1, num_aggs=self.num_aggs)
 
     def forward(self, x, adj, batch_num_nodes=None, **kwargs):
         if 'assign_x' in kwargs:
@@ -278,12 +287,6 @@ class SoftPoolingGcnEncoder(GcnEncoderGraph):
         embedding_tensor = self.gcn_forward(x, adj, self.conv_first, self.conv_block, self.conv_last,
                                             embedding_mask)  # [batch_size x num_nodes x embedding_dim]
         # 存储特征
-        # out, _ = torch.max(embedding_tensor, dim=1)
-        # out_all.append(out)
-
-        # if self.num_aggs == 2:
-        #     out = torch.sum(embedding_tensor, dim=1)
-        #     out_all.append(out)
         # 开始池化
         for i in range(self.num_pooling):
             if batch_num_nodes is not None and i == 0:
@@ -325,8 +328,19 @@ class SoftPoolingGcnEncoder(GcnEncoderGraph):
         else:
             output = out
 
-        pre = self.head(output)
-        return pre
+        self.quality_pre = self.quality_head(output)
+        self.beauty_pre = self.beauty_head(output)
+        self.color_pre = self.color_head(output)
+        self.composition_pre = self.composition_head(output)
+        self.content_pre = self.content_head(output)
+
+        return {
+            'aesthetic_quality': self.quality_pre,
+            'beauty': self.beauty_pre,
+            'color': self.color_pre,
+            'composition': self.composition_pre,
+            'content': self.content_pre
+        }
 
     def loss(self, adj=None, batch_num_nodes=None, adj_hop=1):
         '''
@@ -356,11 +370,11 @@ class SoftPoolingGcnEncoder(GcnEncoderGraph):
         return self.link_loss
 
 
-class apnb_cnn_pool(BaseNetwork):
-    def __init__(self, class_num):
-        super(apnb_cnn_pool, self).__init__()
+class cnn_pool_jas(BaseNetwork):
+    def __init__(self):
+        super(cnn_pool_jas, self).__init__()
         self.cnn = CNN()
-        self.GCN = SoftPoolingGcnEncoder(class_num=class_num)
+        self.GCN = SoftPoolingGcnEncoder(class_num=1)
         self.GCN.init_weights()
 
     def forward(self, images, size, boxes, adj):
