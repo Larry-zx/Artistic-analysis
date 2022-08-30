@@ -4,11 +4,7 @@ import os
 import pandas as pd
 from data.get_dataLoader import get_loader
 from utils.utils import set_transform, timeSince, create_dir
-from model.detectionGCN_v1 import detectionGCNv1
-from model.detectionGCN_v2 import detectionGCNv2
-from model.detectionGCN_v3 import detectionGCNv3
-from model.detectionGCN_v4 import detectionGCNv4
-from model.detectionGCN_v6 import detectionGCNv6
+from model.classifer import multitask_classifer, singletask_classifer, vit_multi, vit_single, swin_multi, swin_single
 import config as cfg
 import torch
 import torch.optim as optim
@@ -16,7 +12,7 @@ import torch.nn.functional as F
 from torch import nn
 import time
 import numpy as np
-from data.wikiArtObj import data_balance
+from data.SemArt import data_balance
 
 
 class Classifier_Trainer(object):
@@ -30,9 +26,9 @@ class Classifier_Trainer(object):
         self.epoch = cfg.epoch
         self.lr = cfg.learning_rate
         # 数据加载器
-        self.train_dataloader = get_loader(batch_size=self.batchsize, mode='train')
-        self.val_dataloader = get_loader(batch_size=self.val_batchsize, mode='val')
-        self.test_dataloader = get_loader(batch_size=self.test_batchsize, mode='test')
+        self.train_dataloader = get_loader(batch_size=self.batchsize, mode='train', transform=set_transform())
+        self.val_dataloader = get_loader(batch_size=self.val_batchsize, mode='val', transform=set_transform())
+        self.test_dataloader = get_loader(batch_size=self.test_batchsize, mode='test', transform=set_transform())
         # 计算设备
         self.device = torch.device("cuda:" + str(cfg.DEVICE_ID) if torch.cuda.is_available() else "cpu")
         print('计算设备:', self.device)
@@ -47,7 +43,7 @@ class Classifier_Trainer(object):
         # 优化器 负责更新参数
         self.optimer = optim.Adam(self.model.parameters(), lr=self.lr)
         # 负责调节学习率
-        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=self.optimer, T_mult=2, T_0=5)
+        self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimer, [30, 80], gamma=0.1)
         # 回归任务的损失函数
         self.MSE = nn.MSELoss()
         # 开始时间
@@ -63,28 +59,30 @@ class Classifier_Trainer(object):
         model = None
         print("模型:%s-%s" % (model_type, self.task_type))
         if self.task_type == 'multi':
-            if self.mode_type == 'dgnv1':
-                model = detectionGCNv1()
-                model.init_weights()
-            elif self.mode_type == 'dgnv2':
-                model = detectionGCNv2()
-            elif self.mode_type == 'dgnv3':
-                model = detectionGCNv3()
-            elif self.mode_type == 'dgnv4':
-                model = detectionGCNv4()
-                model.FE.vit_load(os.path.join(cfg.vit_path, "%s.pth" % ("vit")))
-            elif self.mode_type == 'dgnv5':
-                model = detectionGCNv4()
-                model.FE.vit_load(os.path.join(cfg.vit_path, "%s.pth" % ("vit")))
-            elif self.mode_type == 'dgnv6':
-                model = detectionGCNv6()
+            if self.mode_type == 'vit':
+                model = vit_multi()
+                state_dict = torch.load(os.path.join(cfg.vit_path, "%s.pth" % (model_type)))
+                model.load_state_dict(state_dict, strict=False)
+                print("「%s」参数文件已经加载" % (os.path.join(cfg.vit_path, "%s.pth" % (model_type))))
+            elif self.mode_type == 'swin':
+                model = swin_multi()
+                state_dict = torch.load(os.path.join(cfg.vit_path, "%s.pth" % (model_type)))
+                model.load_state_dict(state_dict, strict=False)
+                print("「%s」参数文件已经加载" % (os.path.join(cfg.vit_path, "%s.pth" % (model_type))))
+            else:
+                model = multitask_classifer(init, cnn_pretrained=pretrained, model_type=model_type)
+        elif self.task_type == 'single':
+            pass
+            if self.mode_type == 'vit':
+                model = vit_single(os.path.join(cfg.vit_path, "%s.pth" % (model_type)))
+            if self.mode_type == 'swin':
+                model = swin_single(os.path.join(cfg.vit_path, "%s.pth" % (model_type)))
+            else:
+                model = singletask_classifer(init, cnn_pretrained=pretrained, model_type=model_type)
+        else:
+            print("「task_type」输入有误 请在multi / single 中选择一个")
         model.print_network()
-        if cfg.continue_train == 1:
-            model_path = os.path.join('checkpoints', cfg.dataset, cfg.task_type, "%s.pth" % (cfg.path_name))
-            model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
-            print("加载参数文件: {}".format(model_path))
         model = model.to(self.device)
-        # print(model)
         return model
 
     def create_model_dir(self):
@@ -95,73 +93,79 @@ class Classifier_Trainer(object):
         create_dir(name2)
         self.checkpoints_dir = name2
 
-    def set_input(self, datas):
-        [y_artist, y_genre, y_style] = datas['labels']
-        images = datas['images']
-        adj = datas['adj']
-        y_artist = y_artist.to(self.device)
-        y_genre = y_genre.to(self.device)
-        y_style = y_style.to(self.device)
-        adj = adj.to(self.device)
-        for i in range(len(images)):
-            images[i] = images[i].to(self.device)
-        return y_artist, y_genre, y_style, images, adj
+    def set_input(self, data):
+        images, label_data = data
+        images = images.to(self.device)
+        label_data['author'] = label_data['author'].to(self.device)
+        label_data['technique'] = (label_data['technique']).to(self.device)
+        label_data['material'] = (label_data['material']).to(self.device)
+        label_data['year'] = label_data['year'].reshape(-1, 1).to(self.device)
+        label_data['type'] = (label_data['type']).to(self.device)
+        label_data['school'] = (label_data['school']).to(self.device)
+        label_data['timeFrame'] = (label_data['timeFrame']).to(self.device)
+        return images, label_data
 
     def set_weights(self):
-        self.artist_weights, self.genre_weights, self.style_weights = data_balance()
-        self.artist_weights = torch.FloatTensor(self.artist_weights).to(self.device)
-        self.genre_weights = torch.FloatTensor(self.genre_weights).to(self.device)
-        self.style_weights = torch.FloatTensor(self.style_weights).to(self.device)
+        weight_dict = data_balance()
+        self.author_w = torch.FloatTensor(weight_dict['author']).to(self.device)
+        self.technique_w = torch.FloatTensor(weight_dict['technique']).to(self.device)
+        self.material_w = torch.FloatTensor(weight_dict['material']).to(self.device)
+        self.type_w = torch.FloatTensor(weight_dict['type']).to(self.device)
+        self.school_w = torch.FloatTensor(weight_dict['school']).to(self.device)
+        self.timeFrame_w = torch.FloatTensor(weight_dict['timeFrame']).to(self.device)
 
     # 一个epoch的训练
     def train(self, epoch_id):
         self.model.train()
         for batch_idx, datas in enumerate(self.train_dataloader):
             self.optimer.zero_grad()
-            y_artist, y_genre, y_style, images, adj = self.set_input(datas)
-            outDict = self.model(images, adj)
-            pre_artist, pre_genre, pre_style = outDict['artist'], outDict['genre'], outDict['style']
-
-            artist_loss = F.cross_entropy(input=pre_artist, target=y_artist,
-                                          weight=self.artist_weights)
-            genre_loss = F.cross_entropy(input=pre_genre, target=y_genre,
-                                         weight=self.genre_weights)
-            style_loss = F.cross_entropy(input=pre_style, target=y_style,
-                                         weight=self.style_weights)
-            # if self.mode_type == 'dgnv3':
-            #     link_loss = self.model.Linkloss(adj)
-            #     total_loss = artist_loss + genre_loss + style_loss + link_loss
-            # else:
-            total_loss = artist_loss + genre_loss + style_loss
-
+            images, data = self.set_input(datas)
+            out_dict = self.model(images)
+            author_loss = F.cross_entropy(input=out_dict['author'], target=data['author'],
+                                          weight=self.author_w)
+            technique_loss = F.cross_entropy(input=out_dict['technique'], target=data['technique'],
+                                             weight=self.technique_w)
+            material_loss = F.cross_entropy(input=out_dict['material'], target=data['material'],
+                                            weight=self.material_w)
+            type_loss = F.cross_entropy(input=out_dict['type'], target=data['type'],
+                                        weight=self.type_w)
+            school_loss = F.cross_entropy(input=out_dict['school'], target=data['school'],
+                                          weight=self.school_w)
+            timeFrame_loss = F.cross_entropy(input=out_dict['timeFrame'], target=data['timeFrame'],
+                                             weight=self.timeFrame_w)
+            # 合计loss
+            total_loss = author_loss + technique_loss + material_loss + type_loss + school_loss + timeFrame_loss
             # 误差回传
             total_loss.backward()
-
             # 更新参数
             self.optimer.step()
             # 记录loss
-            if (batch_idx + 1) % (len(self.train_dataloader) // 32) == 0:
+            if (batch_idx + 1) % (len(self.train_dataloader) // 6) == 0:
                 # 存储loss
-                self.loss_dict['artist'].append(artist_loss.cpu().item())
-                self.loss_dict['genre'].append(genre_loss.cpu().item())
-                self.loss_dict['style'].append(style_loss.cpu().item())
-            if (batch_idx + 1) % (len(self.train_dataloader) // 3) == 0:
+                self.loss_dict['author'].append(author_loss.cpu().item())
+                self.loss_dict['technique'].append(technique_loss.cpu().item())
+                self.loss_dict['material'].append(material_loss.cpu().item())
+                self.loss_dict['type'].append(type_loss.cpu().item())
+                self.loss_dict['school'].append(school_loss.cpu().item())
+                self.loss_dict['timeFrame'].append(timeFrame_loss.cpu().item())
                 # 终端输出
                 print(
-                    "Epoch: %d/%d , batch_idx:%d , time:%s , artist:%.2f , genre:%.2f , style:%.2f  " % (
+                    "Epoch: %d/%d , batch_idx:%d , time:%s , author:%.2f , technique:%.2f , year:%.2f , type:%.2f , school:%.2f , timeFrame:%.2f " % (
                         epoch_id + 1, cfg.epoch, batch_idx + 1, timeSince(self.startTime),
-                        artist_loss.data, genre_loss.data, style_loss.data))
+                        author_loss.data, technique_loss.data, year_loss.data,
+                        type_loss.data, school_loss.data, timeFrame_loss.data))
 
     # 在验证集 上验证
 
     def val(self):
         self.model.eval()
-        accuracy_dict = {'artist': [], 'genre': [], 'style': []}
+        accuracy_dict = {'author': [], 'technique': [], 'material': [], 'type': [], 'school': [],
+                         'timeFrame': []}
         with torch.no_grad():
             for batch_idx, datas in enumerate(self.val_dataloader):
-                y_artist, y_genre, y_style, images, adj = self.set_input(datas)
-                data = {'artist': y_artist, 'genre': y_genre, 'style': y_style}
-                out_dict = self.model(images, adj)
+                # TODO修改
+                images, data = self.set_input(datas)
+                out_dict = self.model(images)
                 for attr in cfg.Attr_list:
                     pred_list = out_dict[attr]
                     true_list = data[attr]
@@ -191,14 +195,16 @@ class Classifier_Trainer(object):
             self.model.to(self.device)
             print("加载参数文件: {}".format(model_path))
         self.model.eval()
-        accuracy_dict = {'artist': [], 'genre': [], 'style': []}
-        pre_dict = {'artist': [], 'genre': [], 'style': []}
-        true_dict = {'artist': [], 'genre': [], 'style': []}
+        accuracy_dict = {'author': [], 'technique': [], 'material': [], 'type': [], 'school': [],
+                         'timeFrame': []}
+        pre_dict = {'author': [], 'technique': [], 'material': [], 'type': [], 'school': [],
+                    'timeFrame': []}
+        true_dict = {'author': [], 'technique': [], 'material': [], 'type': [], 'school': [],
+                     'timeFrame': []}
         with torch.no_grad():
             for batch_idx, datas in enumerate(self.test_dataloader):
-                y_artist, y_genre, y_style, images, adj = self.set_input(datas)
-                data = {'artist': y_artist, 'genre': y_genre, 'style': y_style}
-                out_dict = self.model(images, adj)
+                images, data = self.set_input(datas)
+                out_dict = self.model(images)
                 for attr in cfg.Attr_list:
                     pred_list = out_dict[attr]
                     true_list = data[attr]
@@ -241,19 +247,18 @@ class Classifier_Trainer(object):
         best_model_wts = copy.deepcopy(self.model.state_dict())
         best_acc = 0.0
         # loss字典
-        self.loss_dict = {'artist': [], 'genre': [], 'style': []}
+        self.loss_dict = {'author': [], 'technique': [], 'material': [], 'type': [], 'school': [],
+                          'timeFrame': []}
         # 统计每个epoch的正确率weight
-        epoch_acc_dict = {'artist': [], 'genre': [], 'style': [], 'mAP': []}
+        epoch_acc_dict = {'author': [], 'technique': [], 'material': [], 'type': [], 'school': [],
+                          'timeFrame': [], 'mAP': []}
         self.startTime = time.time()
         for epoch in range(self.epoch):
             print("train............")
             self.train(epoch)
             print('val..............')
             acc_dict = self.val()
-            old_lr = self.lr
-            self.scheduler.step()
-            new_lr = self.lr
-            print("学习率: %s >>>> %s" % (old_lr, new_lr))
+
             for attr in epoch_acc_dict.keys():
                 epoch_acc_dict[attr].append(acc_dict[attr])
 
@@ -262,7 +267,6 @@ class Classifier_Trainer(object):
             if mAP > best_acc:
                 best_acc = mAP
                 best_model_wts = copy.deepcopy(self.model.state_dict())
-            newest_model_wts = copy.deepcopy(self.model.state_dict())
 
             # 每个epoch的正确率保存
             epoch_acc_csv = pd.DataFrame(epoch_acc_dict)
@@ -271,10 +275,7 @@ class Classifier_Trainer(object):
             loss_csv = pd.DataFrame(self.loss_dict)
             loss_csv.to_csv(os.path.join(self.result_dir, 'loss.csv'), index=False)
             # 模型参数保存
-            model_save_path = os.path.join(self.checkpoints_dir, '%s_%s_best.pth' % (self.mode_type, cfg.time))
+            model_save_path = os.path.join(self.checkpoints_dir, '%s.pth' % (self.mode_type))
             torch.save(best_model_wts, model_save_path)
-            # 最新模型
-            torch.save(newest_model_wts,
-                       os.path.join(self.checkpoints_dir, '%s_%s_newest.pth' % (self.mode_type, cfg.time)))
 
         self.test()

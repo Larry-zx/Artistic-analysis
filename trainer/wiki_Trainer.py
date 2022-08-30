@@ -4,7 +4,9 @@ import os
 import pandas as pd
 from data.get_dataLoader import get_loader
 from utils.utils import set_transform, timeSince, create_dir
-from model.wikiArt_Classifer import multitask_classifer, singletask_classifer
+from model.classifer import multitask_classifer, singletask_classifer, vit_multi, vit_single, swin_multi, swin_single, \
+    ViG_multi, ViG_single
+from model.vit_diffpool_multi import vit_zx_multi
 import config as cfg
 import torch
 import torch.optim as optim
@@ -31,7 +33,7 @@ class Classifier_Trainer(object):
         self.test_dataloader = get_loader(batch_size=self.test_batchsize, mode='test', transform=set_transform())
         # 计算设备
         self.device = torch.device("cuda:" + str(cfg.DEVICE_ID) if torch.cuda.is_available() else "cpu")
-        print('计算设备:' , self.device)
+        print('计算设备:', self.device)
         # 模型
         self.mode_type = cfg.model_type
         # 任务类型
@@ -43,7 +45,7 @@ class Classifier_Trainer(object):
         # 优化器 负责更新参数
         self.optimer = optim.Adam(self.model.parameters(), lr=self.lr)
         # 负责调节学习率
-        self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimer, [30, 80], gamma=0.1)
+        self.set_scheduler()
         # 回归任务的损失函数
         self.MSE = nn.MSELoss()
         # 开始时间
@@ -53,15 +55,47 @@ class Classifier_Trainer(object):
         #
         self.set_weights()
 
+    def set_scheduler(self):
+        if cfg.scheduler == 'None':
+            self.scheduler = None
+        elif cfg.scheduler == 'cosine':
+            self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=self.optimer, T_mult=2, T_0=5)
+        elif cfg.scheduler == 'linear':
+            self.scheduler = optim.lr_scheduler.StepLR(optimizer=self.optimer, step_size=1, gamma=0.9)
+
     # 建立模型
     def set_model(self, pretrained, model_type):
         init = cfg.model_path == None
         model = None
         print("模型:%s-%s" % (model_type, self.task_type))
         if self.task_type == 'multi':
-            model = multitask_classifer(init, cnn_pretrained=pretrained, model_type=model_type)
+            if self.mode_type == 'vit':
+                model = vit_multi()
+                state_dict = torch.load(os.path.join(cfg.vit_path, "%s.pth" % (model_type)))
+                model.load_state_dict(state_dict, strict=False)
+                print("「%s」参数文件已经加载" % (os.path.join(cfg.vit_path, "%s.pth" % (model_type))))
+            elif self.mode_type == 'swin':
+                model = swin_multi()
+                state_dict = torch.load(os.path.join(cfg.vit_path, "%s.pth" % (model_type)))
+                model.load_state_dict(state_dict, strict=False)
+                print("「%s」参数文件已经加载" % (os.path.join(cfg.vit_path, "%s.pth" % (model_type))))
+            elif self.mode_type == 'vig':
+                model = ViG_multi()
+                model.init_weights()
+            elif self.mode_type == 'vit_pool':
+                model = vit_zx_multi(k_neighbour=21, gcn_mode='diffpool')
+            else:
+                model = multitask_classifer(init, cnn_pretrained=pretrained, model_type=model_type)
         elif self.task_type == 'single':
-            model = singletask_classifer(init, cnn_pretrained=pretrained, model_type=model_type)
+            if self.mode_type == 'vit':
+                model = vit_single(os.path.join(cfg.vit_path, "%s.pth" % (model_type)))
+            if self.mode_type == 'swin':
+                model = swin_single(os.path.join(cfg.vit_path, "%s.pth" % (model_type)))
+            elif self.mode_type == 'vig':
+                model = ViG_single()
+                model.init_weights()
+            else:
+                model = singletask_classifer(init, cnn_pretrained=pretrained, model_type=model_type)
         else:
             print("「task_type」输入有误 请在multi / single 中选择一个")
         model.print_network()
@@ -69,10 +103,10 @@ class Classifier_Trainer(object):
         return model
 
     def create_model_dir(self):
-        name1 = os.path.join('result/', self.task_type, self.mode_type)
+        name1 = os.path.join('result/', cfg.dataset, self.task_type, self.mode_type)
         self.result_dir = name1
         create_dir(name1)
-        name2 = os.path.join('checkpoints', self.task_type)
+        name2 = os.path.join('checkpoints', cfg.dataset, self.task_type)
         create_dir(name2)
         self.checkpoints_dir = name2
 
@@ -129,14 +163,14 @@ class Classifier_Trainer(object):
         self.model.eval()
         accuracy_dict = {'artist': [], 'genre': [], 'style': []}
         with torch.no_grad():
-            for batch_idx, datas in enumerate(self.val_dataloader):
+            for batch_idx, datas in enumerate(self.test_dataloader):
                 images, y_artist, y_genre, y_style = self.set_input(datas)
                 data = {'artist': y_artist, 'genre': y_genre, 'style': y_style}
                 out_dict = self.model(images)
                 for attr in cfg.Attr_list:
                     pred_list = out_dict[attr]
                     true_list = data[attr]
-                    for i in range(self.val_batchsize):
+                    for i in range(self.test_batchsize):
                         pre = np.argmax(pred_list[i].data.cpu().numpy())
                         true = true_list[i].item()
                         accuracy_dict[attr].append(pre == true)
@@ -157,7 +191,9 @@ class Classifier_Trainer(object):
         # 如果有参数文件
         if model_path is not None:
             # 加载模型文件
-            self.model.load_state_dict(torch.load(model_path))
+            device = torch.device("cpu")
+            self.model.load_state_dict(torch.load(model_path, map_location=device))
+            self.model.to(self.device)
             print("加载参数文件: {}".format(model_path))
         self.model.eval()
         accuracy_dict = {'artist': [], 'genre': [], 'style': []}
@@ -188,7 +224,6 @@ class Classifier_Trainer(object):
                 accuracy_dict[attr] = attr_acc
                 print("属性「%s」: %.2f" % (attr, attr_acc * 100), end=" ")
                 average_acc += attr_acc
-            print("属性「year」: %.2f" % (sum(accuracy_dict['year']) / len(accuracy_dict['year'])))
             print("平均正确率: %.2f" % (average_acc / len(cfg.Attr_list)))
             accuracy_dict['mAP'] = average_acc / len(cfg.Attr_list)
 
@@ -203,6 +238,7 @@ class Classifier_Trainer(object):
 
     def start(self, model_path=None):
         # 如果有参数文件
+        model_path = os.path.join(self.checkpoints_dir, '%s.pth' % (self.mode_type))
         if model_path is not None:
             # 加载模型文件
             self.model.load_state_dict(torch.load(model_path))
@@ -217,9 +253,14 @@ class Classifier_Trainer(object):
         self.startTime = time.time()
         for epoch in range(self.epoch):
             print("train............")
+            torch.cuda.synchronize(self.device)
             self.train(epoch)
             print('val..............')
             acc_dict = self.val()
+            old_lr = self.optimer.param_groups[0]['lr']
+            self.scheduler.step()
+            new_lr = self.optimer.param_groups[0]['lr']
+            print("学习率: %s >>>> %s" % (old_lr, new_lr))
 
             for attr in epoch_acc_dict.keys():
                 epoch_acc_dict[attr].append(acc_dict[attr])
