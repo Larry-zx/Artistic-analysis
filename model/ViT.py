@@ -307,9 +307,6 @@ def vit_base_patch16_224(num_classes: int = 1000):
     return model
 
 
-model = vit_base_patch16_224()
-images = torch.randn([2, 3, 224, 224])
-model(images)
 
 
 def vit_base_patch16_224_in21k(num_classes: int = 21843, has_logits: bool = True):

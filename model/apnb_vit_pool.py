@@ -7,6 +7,8 @@ import config as cfg
 from model.onepic_cnn_pool import SoftPoolingGcnEncoder
 import os
 
+import time
+
 
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     if drop_prob == 0. or not training:
@@ -277,6 +279,5 @@ class apnb_vit_pool(BaseNetwork):
     def forward(self, images, size, boxes, adj):
         vit_features = self.vit(images)
         batch_node_features = self.get_batch_node_feature(images.shape[0], size, boxes, vit_features)
-
         out_dict = self.GCN(batch_node_features, adj)
         return out_dict

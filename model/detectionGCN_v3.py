@@ -162,7 +162,7 @@ class GcnEncoderGraph(BaseNetwork):
         return x_tensor
 
 
-class SoftPoolingGcnEncoder(GcnEncoderGraph):
+class SoftPoolingGcnEncoder(GcnEncoderGraph,BaseNetwork):
     def __init__(self, max_num_nodes=cfg.k_node, input_dim=512, hidden_dim=648, embedding_dim=512, num_layers=3,
                  assign_hidden_dim=648, assign_ratio=0.5, assign_num_layers=-1, num_pooling=2,
                  pred_hidden_dims=[256], concat=True, bn=True, dropout=0.0, linkpred=True,
